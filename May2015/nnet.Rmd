@@ -1,0 +1,84 @@
+---
+title: "Titanic with nnet"
+author: "grf"
+date: "June 1, 2015"
+output: html_document
+---
+
+```{r setup,message=FALSE}
+setwd("~/Dropbox/kaggle/Classification Titanic/May2015")
+opar = par(no.readonly=TRUE)
+
+source("clean_the_dataset.R")
+
+library(nnet)
+library(caret)
+library(foreach)
+library(doParallel)
+registerDoParallel(cores=8)
+
+set.seed(1009)
+
+submit_to_kaggle = FALSE
+file_name        = "submission_avNNet.csv"
+
+output.train = clean_the_dataset(read.csv("train.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE))
+
+output.train$all$Age = scale(output.train$all$Age)
+output.train$all$SibSp = scale(output.train$all$SibSp)
+output.train$all$Parch = scale(output.train$all$Parch)
+output.train$all$Fare = scale(output.train$all$Fare)
+output.train$all$FamilySize = scale(output.train$all$FamilySize)
+output.train$all$Farepp = scale(output.train$all$Farepp)
+
+trainX = model.matrix(Survived ~ .-PassengerId, data = output.train$all)[,-1]
+trainY = output.train$all$Survived
+
+cv_ctrl = trainControl(method="repeatedcv", repeats=5,
+                       summaryFunction=twoClassSummary,
+                       classProbs=TRUE)
+
+nnet_grid = expand.grid(size=seq(1,10,by=1),
+                        decay=seq(0.1,0.9,0.1),
+                        bag=TRUE)
+
+avNNetFit <- train(x = trainX,
+                   y = factor(trainY),
+                   method = "avNNet",
+                   size=1,
+                   decay=0.3,
+                   bag=TRUE,
+                   repeats = 15,
+                   #trControl=cv_ctrl,
+                   #tuneGrid=nnet_grid,
+                   trace = FALSE)
+
+print(avNNetFit)
+
+
+output.test = clean_the_dataset(read.csv("test.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE))
+
+output.test$Xtest$Age = scale(output.test$Xtest$Age)
+output.test$Xtest$SibSp = scale(output.test$Xtest$SibSp)
+output.test$Xtest$Parch = scale(output.test$Xtest$Parch)
+output.test$Xtest$Fare = scale(output.test$Xtest$Fare)
+output.test$Xtest$FamilySize = scale(output.test$Xtest$FamilySize)
+output.test$Xtest$Farepp = scale(output.test$Xtest$Farepp)
+
+testX = model.matrix(~ .-PassengerId, data = output.test$Xtest)[,-1]
+
+pred = predict(avNNetFit, testX, type="prob")
+
+
+submission.df = data.frame(PassengerId = output.test$Xtest$PassengerId,
+                           Survived    = as.numeric(pred >= 0.50))
+
+print(submission.df[1:10,])
+
+write.csv(submission.df, file=file_name, row.names=FALSE)
+
+```

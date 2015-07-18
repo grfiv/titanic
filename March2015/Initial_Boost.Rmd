@@ -1,0 +1,76 @@
+---
+title: "Titanic March 2015"
+author: "George Fisher"
+date: "Wednesday, March 18, 2015"
+output: html_document
+---
+Read and clean the data
+
+```{r setup,message=FALSE}
+setwd("~/Dropbox/kaggle/Classification Titanic/March2015")
+opar = par(no.readonly=TRUE)
+
+source("clean_the_dataset.R")
+
+output = clean_the_dataset(read.csv("train.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE))
+raw_data = output$all
+X        = output$X
+Y        = output$Y
+YX       = output$YX
+rm(output)
+str(raw_data)
+```
+Select training indices, formula and threshold
+```{r testset}
+set.seed(1009)
+formla    = formula(Survived~.-PassengerId)
+threshold = 0.57
+
+smp_size  <- floor(0.25 * nrow(raw_data))
+test.set  <- sample(seq_len(nrow(raw_data)), size = smp_size)
+```
+
+Predictions
+```{r predictions,message=FALSE,warning=FALSE}
+
+
+source("rpart.R")#,echo=TRUE)
+#source("logit.R")
+#source("svm.R")
+#source("qda.R")
+source("boost.R")
+source("boostTest.R")
+source("rf.R")
+source("cforest.R")
+#source("exhaust.R")
+
+bymse = comparison[,order(comparison[4,],decreasing=FALSE)]
+byacc = bymse[,order(bymse[1,],decreasing=TRUE)]
+print(byacc)
+```
+
+Apply BOOST to the full training dataset
+--------------   
+```{r rfapply}
+submission.fit = gbm(formla, data=raw_data,
+                distribution="gaussian" , n.trees =5000 , interaction.depth =1)
+```
+Predict the test set
+-----------   
+```{r rftest}
+output.test = clean_the_dataset(read.csv("test.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE))
+Xtest = output.test$Xtest
+
+submission.pred = predict(submission.fit, newdata=Xtest, n.trees=5000)
+
+submission.df = data.frame(PassengerId=Xtest$PassengerId,
+                           Survived=as.numeric(submission.pred>0.54))
+
+print(submission.df[1:10,])
+
+write.csv(submission.df,file="submission_boost.csv",row.names=FALSE)
+```

@@ -1,0 +1,339 @@
+---
+output: html_document
+---
+---
+title: "Second Round of Titanic Kaggle Contest 2015"
+author: "George Fisher"
+date: "03/22/2015"
+output: html_document
+---   
+
+PCR produced my best score prior to this: 0.79426  
+
+# New Score 0.80861
+
+
+------------------------   
+
+Read and clean the data, select training/test split
+
+```{r setup,message=FALSE}
+setwd("C:/Users/GRFisher4/Dropbox/kaggle/Classification Titanic/March2015")
+opar = par(no.readonly=TRUE)
+
+source("clean_the_dataset.R")
+source("plot_thresholds.R")
+source("plot_learning_curves.R")
+
+library(ROCR)
+library (pls)
+
+set.seed(1009)
+
+# dummyvars = FALSE => factors
+# dummyvars = TRUE  => dummy variables/indicators
+dummyvars = FALSE
+
+submit_to_kaggle = TRUE
+file_name        = "submission_bagging_pcr.csv"
+
+output = clean_the_dataset(read.csv("train.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE),
+                           dummy.vars=dummyvars)
+raw_data = output$all
+X        = output$X
+Y        = output$Y
+YX       = output$YX
+rm(output)
+str(raw_data)
+
+smp_size  <- floor(0.25 * nrow(raw_data))
+test.set  <- sample(seq_len(nrow(raw_data)), size = smp_size)
+train.set = seq(1:nrow(raw_data))[!(1:nrow(raw_data) %in% test.set)]
+``` 
+
+Train on the train.set, predict the test.set
+-----------  
+```{r training}
+
+threshold = 0.5439
+
+formla = formula(Survived~.-PassengerId
+                 + I(as.numeric(Deck)*FamilySize)
+                 + poly(I(as.numeric(Deck)*FamilySize),4)
+                 + poly(I(as.numeric(Deck)*as.numeric(Side)),3)
+                 + poly(I(as.numeric(Embarked)*FamilySize),2)
+                 + poly(I(as.numeric(Embarked)*as.numeric(Side)),2)
+                 + poly(I(as.numeric(Embarked)*as.numeric(Deck)),2)
+                 + poly(I(as.numeric(Embarked)*as.numeric(Fare2)),4)
+                 + I(as.numeric(Embarked)*FamilySize)
+                 + I(Farepp*as.numeric(Pclass)) 
+                 + I(as.numeric(Sex)*Parch)
+                 + poly(I(Age*as.numeric(Deck)),4)
+                 + poly(I(as.numeric(Sex)*Parch),3)
+                 + I(as.numeric(Sex)*Fare)
+                 + poly(I(as.numeric(Sex)*Fare),2)
+                 + poly(Age,3)
+                 + poly(FamilySize,2))
+
+pcr.fit = pcr(formla,
+              data=raw_data[train.set,],
+              scale=FALSE, validation="CV")
+
+best.comp = which.min(RMSEP(pcr.fit)$val[2,,])
+
+pcr.pred = predict (pcr.fit, newdata=raw_data[test.set,], ncomp=best.comp, type="response")
+pcr.pred = data.frame(pcr.pred)[,1]
+```
+
+Show the best number of components chosen by CV
+-----------    
+Principal Components analysis has two advantages with data like this:   
+
+* The SVD aspect is wholly non-linear  
+* The CV process removes extraneous information
+```{r bestcomplot}
+plot(RMSEP(pcr.fit)$val[2,,],
+     main="Optimal Number of Components to use; found by CV",
+     sub=paste("best number of components in red",best.comp),
+     ylab="RMSE",xlab="Components")
+points(best.comp,min(RMSEP(pcr.fit)$val[2,,]),pch=20,col="red")
+```   
+
+Show the predictions
+-----------    
+```{r predictplot}
+predplot(pcr.fit, ncomp=best.comp,pch=20,cex=0.5,
+         which="test",newdata=raw_data[test.set,],
+         main="Predictions made on the test.set")
+abline(h=threshold)
+text(0.075,0,"perished")
+text(0.92,1,"survived")
+```
+
+
+Calculate Statictics
+-----------  
+```{r stats}
+
+matrix = table(actual=raw_data$Survived[test.set], predicted=pcr.pred >= threshold)
+  
+  TN = matrix[1]; FP = matrix[3]
+  FN = matrix[2]; TP = matrix[4]
+  
+  model_accuracy = (TN + TP) / (TN + FP + FN + TP)
+  
+  R              = TP / (FN + TP)
+  P              = TP / (TP + FP)
+  Fvalue         = 2 * ( (P * R) / (P + R) )
+  
+  mse = mean((pcr.pred - Y[test.set])^2)
+
+  MCC = ( TP*TN - FN*FP  ) / sqrt( (TN+FN)*(TN+FP)*(TP+FN)*(TP+FP) )
+
+  ROCRpred = prediction(pcr.pred, raw_data$Survived[test.set])
+  ROCRperf = performance(ROCRpred, "tpr", "fpr")
+  AUC = performance(ROCRpred,"auc")@y.values[[1]]
+
+  comparison = data.frame(pcr=c(round(model_accuracy,digits=4),
+                                round(mse,digits=4),
+                                round(Fvalue,digits=4),
+                                round(AUC,digits=4),
+                                round(MCC,digits=4)))
+  rownames(comparison) = c("model_accuracy","MSE","Fvalue","AUC","MCC")
+print(comparison)
+print(matrix)
+plot_thresholds(pcr.pred,threshold)
+```  
+
+## Calculate seemingly-optimal threshold   
+```{r calcthresh}
+max.acc     = 0
+thresh.df   = data.frame(zero=0)
+for (thresh in seq(from = 0.4,
+                   to   = 0.6,
+                   by  =  0.0001)) {
+  
+  matx = table(actual    = raw_data$Survived[test.set], 
+               predicted = pcr.pred >= thresh)
+  
+  TN = matx[1]; FP = matx[3]
+  FN = matx[2]; TP = matx[4]
+  
+  mod.acc = (TN + TP) / (TN + FP + FN + TP)
+  if (mod.acc > max.acc) {
+    max.acc     = mod.acc
+  }
+  thresh.df[[toString(thresh)]] <- mod.acc
+}
+best.thresh.range = range(which(thresh.df[1,]==max.acc))
+best.thresh1 = as.numeric(names(thresh.df[best.thresh.range[1]]))
+best.thresh2 = as.numeric(names(thresh.df[best.thresh.range[2]]))
+best.thresh  = (best.thresh1+best.thresh2)/2
+print(paste("Center-of-the-range threshold =",best.thresh))
+```
+
+# Learning Curves
+
+### For High Bias:  
+you're not adequately fitting the data you've been given
+
+* more data won't help much
+* more features may help
+* polynomial or interaction features may help
+* reduce regularization
+* consider a different algorithm (a linear model will never fit cubic data)
+* manually look at the errors you're making to discover patterns for which you can add features or which may guide your choice of a new model    
+
+### For High Variance:  
+your model doesn't work for new data; probably overfitting
+
+* more data will help if the lines are converging
+* fewer features will reduce model complexity and make it generalize better
+* less-complex features may do the same
+* as will increased regularization
+* consider a different algorithm (a degree-6 model will overfit degree-2 data)
+* manually look at the errors you're making to discover patterns 
+```{r learningcurves}
+train.errors = numeric(0)
+test.errors  = numeric(0)
+train.set.sizes = c(seq(50,length(train.set),25),length(train.set))
+for (train.set.size in train.set.sizes) {
+  
+  # create a training sample of increasing size
+  train.set.LC = train.set[1:train.set.size]      # pick the first n
+#   train.set.LC = sample(train.set, 
+#                         size=train.set.size,
+#                         replace=FALSE)            # shuffle and get n
+#   train.set.LC = sample(train.set, 
+#                         size=train.set.size,
+#                         replace=TRUE)             # bootstrap for n
+  
+  # fit the model, use CV to pick the best number of pcomps
+  pcr.fit.LC = pcr(formla,
+                data=raw_data[train.set.LC,],
+                scale=FALSE, validation="CV")
+  
+  best.comp.LC = which.min(RMSEP(pcr.fit.LC)$val[2,,])
+  
+  # predict the train/test-set responses
+  pcr.pred.train.LC = predict (pcr.fit.LC, newdata=raw_data[train.set.LC,], 
+                               ncomp=best.comp.LC, type="response")
+  pcr.pred.train.LC = data.frame(pcr.pred.train.LC)[,1]
+  
+  pcr.pred.test.LC  = predict (pcr.fit.LC, newdata=raw_data[test.set,], 
+                               ncomp=best.comp.LC, type="response")
+  pcr.pred.test.LC  = data.frame(pcr.pred.test.LC)[,1]
+  
+  # find the MSE for train/test-set predictions
+  mse.train.LC = mean((pcr.pred.train.LC - raw_data[train.set.LC,]$Survived)^2)
+  mse.test.LC  = mean((pcr.pred.test.LC  - raw_data[test.set,]$Survived)^2)
+  
+  # save the values for the last step
+  train.errors = c(train.errors, mse.train.LC)
+  test.errors  = c(test.errors,  mse.test.LC)
+}
+# plot the result
+plot_learning_curves(train.set.sizes, train.errors, test.errors)
+```
+   
+False Positives  
+---------------   
+- predicted = 1   
+- actual    = 0   
+
+
+```{r FP}
+pred.vectors = data.frame(predicted = as.numeric(pcr.pred>=threshold), 
+                          actual    = raw_data$Survived[test.set])
+
+false.positives = pred.vectors$predicted==1 & pred.vectors$actual==0
+print(matrix)
+print(sum(false.positives))
+print(raw_data[test.set,][false.positives,])
+
+```   
+
+False Negatives  
+---------------   
+- predicted = 0   
+- actual    = 1   
+  
+```{r FN}
+
+
+false.negatives = pred.vectors$predicted==0 & pred.vectors$actual==1
+print(matrix)
+print(sum(false.negatives))
+print(raw_data[test.set,][false.negatives,])
+
+```   
+
+***
+
+# Submit to Kaggle
+
+## Get the test dataset
+```{r getxtest}
+if (submit_to_kaggle) {
+  output.test = clean_the_dataset(read.csv("test.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE),
+                                dummy.vars=dummyvars)
+  Xtest = output.test$Xtest
+}
+```   
+
+## Fit the model on the FULL TRAINING DATASET and Predict on Xtest   
+```{r fitthefulltrainingset}
+if (submit_to_kaggle) {
+  
+    set.seed(1009)
+
+    iterations     <- 1000
+    
+    accumulator = data.frame(rep(0,nrow(Xtest)))
+    
+    for (i in 1:iterations) {
+    
+        rm(pcr.fit, best.comp, pcr.pred)
+        
+        #index = sample(1:nrow(raw_data),nrow(raw_data)/2,replace=FALSE)
+        
+        pcr.fit = pcr(formla,
+                  data=raw_data,#[index,],                 #############
+                  scale=FALSE, validation="CV")
+        
+        best.comp = which.min(RMSEP(pcr.fit)$val[2,,])
+        
+        
+        pcr.pred = predict (pcr.fit, 
+                          newdata=Xtest,         #############
+                          ncomp=best.comp-1, type="response")
+        
+        
+        accumulator = accumulator + data.frame(pcr.pred)[,1]
+    }
+    
+    accumulator = accumulator / iterations
+    
+    pcr.pred = accumulator
+  
+  }
+```   
+
+## Submit the file     
+```{r submitthefile}
+if (submit_to_kaggle) {
+  
+  submission.df = data.frame(PassengerId=Xtest$PassengerId,
+                             Survived=as.numeric(pcr.pred >= threshold))
+  #                                   --------------------------------
+  
+  print(submission.df[1:10,])
+
+  write.csv(submission.df, file=file_name, row.names=FALSE)
+  print(paste(file_name,"created"))
+  }
+```

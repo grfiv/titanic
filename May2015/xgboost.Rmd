@@ -1,0 +1,105 @@
+---
+output: html_document
+---
+---
+title: "xgBoost for Titanic Kaggle Contest 2015"
+author: "George Fisher"
+date: "06/1/2015"
+output: html_document
+---   
+
+```{r setup,message=FALSE}
+setwd("~/Dropbox/kaggle/Classification Titanic/May2015")
+opar = par(no.readonly=TRUE)
+
+source("clean_the_dataset.R")
+
+library(xgboost)
+library(data.table)
+library(Matrix)
+library(caret)
+
+set.seed(1009)
+
+submit_to_kaggle = FALSE
+file_name        = "submission_xgboost.csv"
+
+output.train = clean_the_dataset(read.csv("train.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE))
+
+train.idx  = createDataPartition(output.train$all$Survived, p=0.75, list=FALSE)
+
+Xtrain = sparse.model.matrix(Survived~.-1-PassengerId-last_name, data=data.table(output.train$all[ train.idx,]))
+Xtest  = sparse.model.matrix(Survived~.-1-PassengerId-last_name, data=data.table(output.train$all[-train.idx,]))
+Ytrain = output.train$Y[ train.idx]
+Ytest  = output.train$Y[-train.idx]
+dtrain = xgb.DMatrix(data=Xtrain, label=Ytrain)
+dtest  = xgb.DMatrix(data=Xtest,  label=Ytest)
+X      = sparse.model.matrix(Survived~.-1-PassengerId-last_name, data=data.table(output.train$all))
+Y      = output.train$Y
+dall   = xgb.DMatrix(data=X, label=Y)
+
+#watchlist = list(eval=dtest, train=dtrain)
+
+param = list(max.depth=6, eta=0.1)
+
+#bst = xgb.train(params=param, data=dtrain, nrounds=20, watchlist=watchlist,
+bst = xgb.train(params=param, data=dall, nrounds=20,
+              nthread=8,       
+              objective="binary:logistic",
+              subsample=0.5,   
+              eval_metric="error", 
+              print.every.n=1)#,
+              #early.stop.round=2,
+              #maximize=FALSE)
+
+#importance = xgb.importance(Xtrain@Dimnames[[2]], model=bst, data=Xtrain, label=Ytrain)
+importance = xgb.importance(X@Dimnames[[2]], model=bst, data=X, label=Y)
+head(importance[,':='(Cover=NULL,Frequence=NULL)])
+xgb.plot.importance(importance_matrix=importance)
+
+############## predict
+
+output.test = clean_the_dataset(read.csv("test.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE))
+
+# Xtest      = list()
+# Xtest$data = sparse.model.matrix(PassengerId~.-1, data=data.table(output.test$Xtest))
+Xtest  = sparse.model.matrix(~.-1-PassengerId-last_name, data=data.table(output.test$Xtest))
+#Xtest = xgb.DMatrix(data=sparse.model.matrix(PassengerId~.-1, data=data.table(output.test$Xtest)))
+
+pred = predict(bst, Xtest$data)
+
+##################### create kaggle file
+
+submission.df = data.frame(PassengerId = output.test$Xtest$PassengerId,
+                           Survived    = as.numeric(pred >= 0.50))
+
+print(submission.df[1:10,])
+
+write.csv(submission.df, file=file_name, row.names=FALSE)
+``` 
+
+```{r}
+cv_ctrl <- trainControl(method = "repeatedcv", repeats = 5,
+                        summaryFunction = twoClassSummary,
+                        classProbs = TRUE)
+
+xgb_grid <- expand.grid(max_depth = seq(1, 100, by = 5),
+                        nrounds=20,
+                        eta = 0.1)
+
+train.set = output.train$all
+train.set$Survived = factor(ifelse(train.set$Survived==0,"no","yes"))
+
+xgb_tune <- train(Survived ~ .-PassengerId, data = train.set,
+                  method = "xgbTree",
+                  metric = "ROC",
+                  tuneGrid = xgb_grid,
+                  trControl = cv_ctrl,
+                  verbose = FALSE)
+
+ggplot(xgb_tune)
+```

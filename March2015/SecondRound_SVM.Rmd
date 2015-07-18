@@ -1,0 +1,392 @@
+---
+output: html_document
+---
+---
+title: "Second Round of Titanic Kaggle Contest 2015"
+author: "George Fisher"
+date: "03/22/2015"
+output: html_document
+---   
+
+pct produced my best score prior to this: 0.80861  
+
+# This Score 0.78469
+
+
+------------------------   
+
+Read and clean the data, select training/test split
+
+```{r setup,message=FALSE}
+setwd("~/Dropbox/kaggle/Classification Titanic/March2015")
+opar = par(no.readonly=TRUE)
+
+source("clean_the_dataset.R")
+source("plot_thresholds.R")
+source("plot_learning_curves.R")
+
+library(ROCR)
+library(e1071)
+library(formula.tools)
+
+set.seed(1009)
+
+# dummyvars = FALSE => factors
+# dummyvars = TRUE  => dummy variables/indicators
+dummyvars = FALSE
+
+submit_to_kaggle = FALSE
+file_name        = "submission_svm_2.csv"
+
+output = clean_the_dataset(read.csv("train.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE),
+                           dummy.vars=dummyvars)
+raw_data = output$all
+X        = output$X
+Y        = output$Y
+YX       = output$YX
+rm(output)
+str(raw_data)
+
+smp_size  <- floor(0.25 * nrow(raw_data))
+test.set  <- sample(seq_len(nrow(raw_data)), size = smp_size)
+train.set = seq(1:nrow(raw_data))[!(1:nrow(raw_data) %in% test.set)]
+``` 
+
+Forward Subset Selection on a Formula
+-------------
+
+The problem I discovered in the first iteration of this problem was that every model has high bias. Andrew Ng advises adding features, interactions and polynomials and trying different models. The process below runs through every variable in the dataset and every feature in the given formula and keeps it if it either increases model accuracy or reduces MSE.
+```{r forwardsubsetselection}
+
+threshold = 0.5000
+
+formla.init = formula(factor(Survived)~.-PassengerId
+                 + I(as.numeric(Deck)*FamilySize)
+                 + poly(I(as.numeric(Deck)*FamilySize),4)
+                 + poly(I(as.numeric(Deck)*as.numeric(Side)),3)
+                 + poly(I(as.numeric(Embarked)*FamilySize),2)
+                 + poly(I(as.numeric(Embarked)*as.numeric(Side)),2)
+                 + poly(I(as.numeric(Embarked)*as.numeric(Deck)),2)
+                 + poly(I(as.numeric(Embarked)*as.numeric(Fare2)),4)
+                 + I(as.numeric(Embarked)*FamilySize)
+                 + I(Farepp*as.numeric(Pclass)) 
+                 
+                 + I(as.numeric(Sex)*Parch)
+                 + I(as.numeric(Sex)*Fare)
+                 + I(as.numeric(Sex)*as.numeric(Pclass))
+                 + I(as.numeric(Sex)*Age)
+                 + I(as.numeric(Sex)*SibSp)
+                 + I(as.numeric(Sex)*as.numeric(Embarked))
+                 + I(as.numeric(Sex)*as.numeric(title))
+                 + I(as.numeric(Sex)*FamilySize)
+                 + I(as.numeric(Sex)*Farepp)
+                 + I(as.numeric(Sex)*as.numeric(Deck))
+                 + I(as.numeric(Sex)*as.numeric(Side))
+                
+                 
+                 + poly(I(as.numeric(Sex)*Parch),2)
+                 + poly(I(as.numeric(Sex)*Fare),2)
+                 + poly(I(as.numeric(Sex)*as.numeric(Pclass)),2)
+                 + poly(I(as.numeric(Sex)*Age),2)
+                 + poly(I(as.numeric(Sex)*SibSp),2)
+                 + poly(I(as.numeric(Sex)*as.numeric(Embarked)),2)
+                 + poly(I(as.numeric(Sex)*as.numeric(title)),2)
+                 + poly(I(as.numeric(Sex)*FamilySize),2)
+                 + poly(I(as.numeric(Sex)*Farepp),2)
+                 + poly(I(as.numeric(Sex)*as.numeric(Deck)),2)
+                 + poly(I(as.numeric(Sex)*as.numeric(Side)),2)
+                 
+                 
+                 + poly(I(as.numeric(Sex)*Fare),2)
+                 + poly(I(Age*as.numeric(Deck)),4)
+                 + poly(SibSp,2)
+                 + poly(Parch,2)
+                 + poly(Fare,2)
+                 + poly(Farepp,2)
+                 + poly(FamilySize,2)
+                 + poly(Age,3)   )
+form.vars = get.vars(formla.init,data=raw_data)
+old.vars  = character()
+accuracy  = 0 
+meansqe   = 1
+
+# go through each feature in the formula and test it
+for (i in 2:length(form.vars)) {
+  new.vars = paste(old.vars,"+",form.vars[[i]])
+  formla   = formula(paste("factor(Survived)~-PassengerId",new.vars))
+  svm.fit  = svm(formla, data=raw_data[train.set,],
+                  kernel="radial",
+                  scale=FALSE, probability=TRUE,decision.values=TRUE,
+                  gamma=0.0078125,cost=1)
+  
+  svm.pred = predict(svm.fit, newdata=raw_data[test.set,], 
+                     decision.values=TRUE, probability=TRUE)
+  
+  matrix = table(actual    = raw_data$Survived[test.set], 
+                 predicted = attributes(svm.pred)$probabilities[,1] >= threshold)
+  TN = matrix[1]; FP = matrix[3]
+  FN = matrix[2]; TP = matrix[4]
+  model_accuracy = (TN + TP) / (TN + FP + FN + TP)
+  
+  mse = mean((attributes(svm.pred)$probabilities[,1] - Y[test.set])^2)
+  
+  # if accuracy improves or MSE goes down, keep the feature
+  if ((model_accuracy > accuracy) || (mse < meansqe)) {
+    old.vars = new.vars
+    accuracy = model_accuracy
+    meansqe  = mse
+    formla   = formula(paste("factor(Survived)~-PassengerId",new.vars))
+  } 
+}
+print(formla)
+print(paste("the formula starts with ",length(form.vars),
+            " features and ends with ",length(get.vars(formla)),
+            sep=""))
+```
+
+Train on the train.set, predict the test.set
+-----------  
+```{r training}
+
+# # 10-fold CV to find the best gamma and cost parameters
+# # ... except my over-rides give better results and with
+# #     high bias I'm not worried about overfitting
+# svm.tune <- tune(svm, formla, data = raw_data[train.set,], 
+#             ranges = list(gamma = 2^(-12:-4), cost = 2^(0:5)),
+#             best.model=FALSE,performances=FALSE,
+#             tunecontrol = tune.control(sampling="cross",cross=10))
+# best.gamma = svm.tune$best.parameters$gamma
+# best.cost  = svm.tune$best.parameters$cost
+# print(paste("gamma",best.gamma))
+# print(paste("cost ",best.cost))
+      
+best.gamma = 0.0078125
+best.cost  = 1
+
+svm.fit = svm(formla, data=raw_data[train.set,],
+              kernel="radial",
+              scale=FALSE, probability=TRUE,decision.values=TRUE,
+              gamma=best.gamma,
+              cost=best.cost)
+
+svm.pred = predict(svm.fit, newdata=raw_data[test.set,], 
+                   decision.values=TRUE, probability=TRUE)
+```
+ 
+Calculate Statictics
+-----------  
+```{r stats}
+
+matrix = table(actual    = raw_data$Survived[test.set], 
+               predicted = attributes(svm.pred)$probabilities[,1] >= threshold)
+  
+  TN = matrix[1]; FP = matrix[3]
+  FN = matrix[2]; TP = matrix[4]
+  
+  model_accuracy = (TN + TP) / (TN + FP + FN + TP)
+  
+  R              = TP / (FN + TP)
+  P              = TP / (TP + FP)
+  Fvalue         = 2 * ( (P * R) / (P + R) )
+  
+  mse = mean((attributes(svm.pred)$probabilities[,1] - Y[test.set])^2)
+
+  MCC = ( TP*TN - FN*FP  ) / sqrt( (TN+FN)*(TN+FP)*(TP+FN)*(TP+FP) )
+
+  ROCRpred = prediction(attributes(svm.pred)$probabilities[,1], raw_data$Survived[test.set])
+  ROCRperf = performance(ROCRpred, "tpr", "fpr")
+  AUC = performance(ROCRpred,"auc")@y.values[[1]]
+
+  comparison = data.frame(svm=c(round(model_accuracy,digits=4),
+                                round(mse,digits=4),
+                                round(Fvalue,digits=4),
+                                round(AUC,digits=4),
+                                round(MCC,digits=4)))
+  rownames(comparison) = c("model_accuracy","MSE","Fvalue","AUC","MCC")
+print(comparison)
+print(matrix)
+plot_thresholds(attributes(svm.pred)$probabilities[,1],threshold)
+```  
+
+## Calculate seemingly-optimal threshold   
+```{r calcthresh}
+max.acc     = 0
+thresh.df   = data.frame(zero=0)
+for (thresh in seq(from = 0.4,
+                   to   = 0.6,
+                   by  =  0.0001)) {
+  
+  matx = table(actual    = raw_data$Survived[test.set], 
+               predicted = attributes(svm.pred)$probabilities[,1] >= threshold)
+  
+  TN = matx[1]; FP = matx[3]
+  FN = matx[2]; TP = matx[4]
+  
+  mod.acc = (TN + TP) / (TN + FP + FN + TP)
+  if (mod.acc > max.acc) {
+    max.acc     = mod.acc
+  }
+  thresh.df[[toString(thresh)]] <- mod.acc
+}
+best.thresh.range = range(which(thresh.df[1,]==max.acc))
+best.thresh1 = as.numeric(names(thresh.df[best.thresh.range[1]]))
+best.thresh2 = as.numeric(names(thresh.df[best.thresh.range[2]]))
+best.thresh  = (best.thresh1+best.thresh2)/2
+print(paste("Center-of-the-range threshold =",best.thresh))
+```
+
+# Learning Curves
+
+### For High Bias:  
+you're not adequately fitting the data you've been given
+
+* more data won't help much
+* more features may help
+* polynomial or interaction features may help
+* reduce regularization
+* consider a different algorithm (a linear model will never fit cubic data)
+* manually look at the errors you're making to discover patterns for which you can add features or which may guide your choice of a new model    
+
+### For High Variance:  
+your model doesn't work for new data; probably overfitting
+
+* more data will help if the lines are converging
+* fewer features will reduce model complexity and make it generalize better
+* less-complex features may do the same
+* as will increased regularization
+* consider a different algorithm (a degree-6 model will overfit degree-2 data)
+* manually look at the errors you're making to discover patterns 
+```{r learningcurves}
+train.errors = numeric(0)
+test.errors  = numeric(0)
+train.set.sizes = c(seq(50,length(train.set),25),length(train.set))
+for (train.set.size in train.set.sizes) {
+  
+  # create a training sample of increasing size
+  train.set.LC = train.set[1:train.set.size]      # pick the first n
+#   train.set.LC = sample(train.set, 
+#                         size=train.set.size,
+#                         replace=FALSE)            # shuffle and get n
+#   train.set.LC = sample(train.set, 
+#                         size=train.set.size,
+#                         replace=TRUE)             # bootstrap for n
+  
+  # fit the model, use CV to pick the best number of pcomps  
+  svm.fit.LC = svm(formla, data=raw_data[train.set.LC,],
+                    kernel="radial",
+                    scale=FALSE, probability=TRUE,decision.values=TRUE,
+                    gamma=best.gamma,
+                    cost=best.cost)
+  
+  # predict the train/test-set responses
+  svm.pred.train.LC = predict(svm.fit.LC, newdata=raw_data[train.set.LC,], 
+                              decision.values=TRUE, probability=TRUE)
+
+  svm.pred.test.LC = predict(svm.fit.LC, newdata=raw_data[test.set,], 
+                             decision.values=TRUE, probability=TRUE)
+  
+  # find the MSE for train/test-set predictions
+  mse.train.LC = mean((attributes(svm.pred.train.LC)$probabilities[,1] - 
+                         raw_data[train.set.LC,]$Survived)^2)
+  mse.test.LC  = mean((attributes(svm.pred.test.LC)$probabilities[,1]  - 
+                         raw_data[test.set,]$Survived)^2)
+  
+  # save the values for the last step
+  train.errors = c(train.errors, mse.train.LC)
+  test.errors  = c(test.errors,  mse.test.LC)
+}
+# plot the result
+plot_learning_curves(train.set.sizes, train.errors, test.errors)
+```
+   
+False Positives  
+---------------   
+- predicted = 1   
+- actual    = 0   
+
+
+```{r FP}
+pred.vectors = data.frame(predicted = as.numeric(attributes(svm.pred)$probabilities[,1] >= threshold), 
+                          actual    = raw_data$Survived[test.set])
+
+false.positives = pred.vectors$predicted==1 & pred.vectors$actual==0
+print(matrix)
+print(sum(false.positives))
+print(raw_data[test.set,][false.positives,])
+
+```   
+
+False Negatives  
+---------------   
+- predicted = 0   
+- actual    = 1   
+  
+```{r FN}
+
+
+false.negatives = pred.vectors$predicted==0 & pred.vectors$actual==1
+print(matrix)
+print(sum(false.negatives))
+print(raw_data[test.set,][false.negatives,])
+
+```   
+
+***
+
+# Submit to Kaggle
+
+## Get the test dataset
+```{r getxtest}
+if (submit_to_kaggle) {
+  output.test = clean_the_dataset(read.csv("test.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE),
+                                dummy.vars=dummyvars)
+  Xtest = output.test$Xtest
+}
+```   
+
+## Fit the model on the FULL TRAINING DATASET   
+```{r fitthefulltrainingset}
+if (submit_to_kaggle) {
+  
+  rm(svm.fit)
+  
+  svm.fit = svm(formla, 
+                data=raw_data,                 #############
+                kernel="radial",
+                scale=FALSE, probability=TRUE,decision.values=TRUE,
+                gamma=best.gamma,
+                cost=best.cost)
+  }
+```
+
+## Predict on Xtest      
+```{r predictxtest}
+if (submit_to_kaggle) {
+  
+  rm(svm.pred)
+  
+  svm.pred = predict(svm.fit, 
+                     newdata=Xtest,         #############
+                     decision.values=TRUE, probability=TRUE)
+  
+  }
+```   
+
+## Submit the file     
+```{r submitthefile}
+if (submit_to_kaggle) {
+  
+  submission.df = data.frame(PassengerId=Xtest$PassengerId,
+                             Survived=as.numeric(attributes(svm.pred)$probabilities[,1] <= threshold))
+  #                                   --------------------------------
+  
+  print(submission.df[1:10,])
+
+  write.csv(submission.df, file=file_name, row.names=FALSE)
+  print(paste(file_name,"created"))
+  }
+```

@@ -1,0 +1,109 @@
+---
+title: "Titanic March 2015"
+author: "George Fisher"
+date: "Wednesday, March 18, 2015"
+output: html_document
+---
+Read and clean the data
+
+```{r setup,message=FALSE}
+setwd("~/Dropbox/kaggle/Classification Titanic/March2015")
+opar = par(no.readonly=TRUE)
+
+source("clean_the_dataset.R")
+source("plot_thresholds.R")
+library(ROCR)
+set.seed(1009)
+
+# dummyvars = FALSE => factors
+# dummyvars = TRUE  => dummy variables/indicators
+# NOTE: dummy vars made boost and rf worse
+# ----------------------------------------
+dummyvars = FALSE
+
+submit_to_kaggle = FALSE
+
+output = clean_the_dataset(read.csv("train.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE),
+                           dummy.vars=dummyvars)
+raw_data = output$all
+X        = output$X
+Y        = output$Y
+YX       = output$YX
+rm(output)
+str(raw_data)
+```
+Select training indices, formula and threshold
+```{r testset}
+formla    = formula(Survived~.-PassengerId)
+threshold = 0.57
+
+smp_size  <- floor(0.25 * nrow(raw_data))
+test.set  <- sample(seq_len(nrow(raw_data)), size = smp_size)
+train.set = seq(1:nrow(raw_data))[!(1:nrow(raw_data) %in% test.set)]
+```
+
+Predictions
+```{r predictions}
+
+
+source("gam.R")
+source("rpart.R")#,echo=TRUE)
+#source("logit.R")
+#source("svm.R")
+#source("qda.R")
+#source("boost.R")
+   source("boostTest.R")
+#source("rf.R")
+#source("cforest.R")
+#source("exhaust.R")
+   source("plsr.R")
+   source("ridge.R")
+#source("lasso.R")
+
+#source("pcr.R")
+
+if (dim(comparison)[2]==1) {
+  print(comparison)
+  } else {
+bymse = comparison[,order(comparison[4,],decreasing=FALSE)]
+byacc = bymse[,order(bymse[1,],decreasing=TRUE)]
+print(byacc)
+}
+```  
+Make a Kaggle submission dataset
+---------------------------   
+```{r submittokaggle}
+if (submit_to_kaggle) {
+output.test = clean_the_dataset(read.csv("test.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE),
+                                dummy.vars=dummyvars)
+Xtest = output.test$Xtest
+
+# ############# FIT TO THE FULL DATASET
+
+file_name = "submission_plsr.csv"
+
+submission.fit = plsr(Survived~.-PassengerId, data=raw_data,
+                     scale=FALSE, validation="CV")
+
+best.comp = which.min(RMSEP(submission.fit)$val[2,,])
+
+
+submission.pred = predict (submission.fit, newdata=Xtest, ncomp=best.comp, type="response")
+submission.pred = data.frame(submission.pred)[,1]
+
+
+submission.df = data.frame(PassengerId=Xtest$PassengerId,
+                           Survived=as.numeric(submission.pred>0.5005))
+
+####################
+
+print(submission.df[1:10,])
+
+write.csv(submission.df,file=file_name,row.names=FALSE)
+print(paste(file_name,"created"))
+}
+```

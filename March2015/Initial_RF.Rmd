@@ -1,0 +1,77 @@
+---
+title: "Titanic March 2015"
+author: "George Fisher"
+date: "Wednesday, March 18, 2015"
+output: html_document
+---
+Read and clean the data
+
+```{r setup,message=FALSE}
+setwd("~/Dropbox/kaggle/Classification Titanic/March2015")
+opar = par(no.readonly=TRUE)
+
+source("clean_the_dataset.R")
+
+output = clean_the_dataset(read.csv("train.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE))
+raw_data = output$all
+X        = output$X
+Y        = output$Y
+YX       = output$YX
+rm(output)
+str(raw_data)
+```
+Select training indices, formula and threshold
+```{r testset}
+set.seed(1009)
+formla    = formula(Survived~.-PassengerId)
+threshold = 0.57
+
+smp_size  <- floor(0.25 * nrow(raw_data))
+test.set  <- sample(seq_len(nrow(raw_data)), size = smp_size)
+```
+
+Predictions
+```{r predictions,message=FALSE,warning=FALSE}
+
+
+source("rpart.R")#,echo=TRUE)
+#source("logit.R")
+#source("svm.R")
+#source("qda.R")
+source("boost.R")
+source("rf.R")
+source("cforest.R")
+#source("exhaust.R")
+
+bymse = comparison[,order(comparison[4,],decreasing=FALSE)]
+byacc = bymse[,order(bymse[1,],decreasing=TRUE)]
+print(byacc)
+```
+
+Apply RF to the full training dataset
+--------------   
+```{r rfapply}
+rf.fit.all = randomForest(x=X, y=factor(Y),   
+                          ntree=500, mtry=ncol(X)/3,
+                          importance=TRUE,proximity=TRUE,
+                          keep.forest=TRUE)
+```
+Predict the test set
+-----------   
+```{r rftest}
+output.test = clean_the_dataset(read.csv("test.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE))
+Xtest = output.test$Xtest
+
+pred.rf.test = predict(rf.fit.all, newdata=Xtest)
+
+result.df = data.frame(PassengerId=Xtest$PassengerId,
+                       Survived=as.numeric(pred.rf.test)-1)
+
+print(result.df[1:10,]) #   0.75598
+
+write.csv(result.df,file="rf.submission.csv",sep=",",row.names=FALSE)
+```

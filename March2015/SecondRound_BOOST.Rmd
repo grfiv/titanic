@@ -1,0 +1,443 @@
+---
+output: html_document
+---
+---
+title: "Second Round of Titanic Kaggle Contest 2015"
+author: "George Fisher"
+date: "03/24/2015"
+output: html_document
+---   
+
+Second Round pcr produced my best score prior to this: 0.80861  
+
+# This Score 0.79904
+
+
+------------------------   
+
+Read and clean the data, select training/test split
+
+```{r setup,message=FALSE}
+setwd("~/Dropbox/kaggle/Classification Titanic/March2015")
+opar = par(no.readonly=TRUE)
+
+source("clean_the_dataset.R")
+source("plot_thresholds.R")
+source("plot_learning_curves.R")
+
+library(ROCR)
+library (gbm)
+library(formula.tools)
+
+set.seed(1009)
+
+# dummyvars = FALSE => factors
+# dummyvars = TRUE  => dummy variables/indicators
+dummyvars = FALSE
+
+submit_to_kaggle = TRUE
+file_name        = "submission_boost_2.csv"
+
+output = clean_the_dataset(read.csv("train.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE),
+                           dummy.vars=dummyvars)
+raw_data = output$all
+X        = output$X
+Y        = output$Y
+YX       = output$YX
+rm(output)
+str(raw_data)
+
+smp_size  <- floor(0.25 * nrow(raw_data))
+test.set  <- sample(seq_len(nrow(raw_data)), size = smp_size)
+train.set = seq(1:nrow(raw_data))[!(1:nrow(raw_data) %in% test.set)]
+``` 
+Set boost parameters
+------------
+See the dataset *boostParameters.R* for exhaustive CV analysis. Note that it uses *formla = formula(Survived~.-PassengerId)* and it should be rerun after the formula is set here (a) to find new parameters and (b) to ensure that the new formula actually does perform better.
+```{r boostparms}
+boost.shrinkage = 0.0001
+boost.ntrees    = 60000
+boost.depth     = 1
+```
+
+Forward Subset Selection on a Formula
+-------------
+
+The problem I discovered in the first iteration of this problem was that every model has high bias. Andrew Ng advises adding features, interactions and polynomials and trying different models. The process below runs through every variable in the dataset and every feature in the given formula and keeps it if it either increases model accuracy or reduces MSE.
+```{r forwardsubsetselection}
+
+threshold =  0.579
+#########################
+
+formla = formula("Survived ~ -PassengerId + Pclass + Sex + Age + SibSp + Parch + 
+     Embarked + title + FamilySize + I(as.numeric(Deck) * FamilySize) + 
+     I(as.numeric(Pclass) * Age) + I(as.numeric(Pclass) * SibSp) + 
+     I(as.numeric(Pclass) * as.numeric(Embarked)) + I(as.numeric(Pclass) * 
+     FamilySize) + I(as.numeric(Pclass) * as.numeric(Side)) + 
+     I(as.numeric(Sex) * SibSp) + I(as.numeric(Sex) * FamilySize) + 
+     I(as.numeric(Sex) * as.numeric(Side))")
+
+run_forward_selection = FALSE
+
+if (run_forward_selection) {
+  formla.init = formula(Survived~.-PassengerId
+                   + I(as.numeric(Deck)*FamilySize)
+  #                  + poly(I(as.numeric(Deck)*FamilySize),2)
+  #                  + poly(I(as.numeric(Deck)*as.numeric(Side)),2)
+  #                  + poly(I(as.numeric(Embarked)*FamilySize),2)
+  #                  + poly(I(as.numeric(Embarked)*as.numeric(Side)),2)
+  #                  + poly(I(as.numeric(Embarked)*as.numeric(Deck)),2)
+  #                  + poly(I(as.numeric(Embarked)*as.numeric(Fare2)),2)
+                   + I(as.numeric(Embarked)*FamilySize)
+                    
+                   + I(as.numeric(Pclass)*Age)
+                   + I(as.numeric(Pclass)*SibSp)
+                   + I(as.numeric(Pclass)*Parch)
+                   + I(as.numeric(Pclass)*Fare)
+                   + I(as.numeric(Pclass)*as.numeric(Embarked))
+                   + I(as.numeric(Pclass)*as.numeric(title))
+                   + I(as.numeric(Pclass)*as.numeric(Fare2))
+                   + I(as.numeric(Pclass)*FamilySize)
+                   + I(as.numeric(Pclass)*Farepp)
+                   + I(as.numeric(Pclass)*as.numeric(Deck))
+                   + I(as.numeric(Pclass)*as.numeric(Side))
+                   
+                   + interaction(title,Pclass,Sex)
+                   
+  #                  + poly(I(as.numeric(Pclass)*Age),2)
+  #                  + poly(I(as.numeric(Pclass)*SibSp),2)
+  #                  + poly(I(as.numeric(Pclass)*Parch),2)
+  #                  + poly(I(as.numeric(Pclass)*Fare),2)
+  #                  + poly(I(as.numeric(Pclass)*as.numeric(Embarked)),2)
+  #                  + poly(I(as.numeric(Pclass)*as.numeric(title)),2)
+  #                  + poly(I(as.numeric(Pclass)*as.numeric(Fare2)),2)
+  #                  + poly(I(as.numeric(Pclass)*FamilySize),2)
+  #                  + poly(I(as.numeric(Pclass)*Farepp),2)
+  #                  + poly(I(as.numeric(Pclass)*as.numeric(Deck)),2)
+  #                  + poly(I(as.numeric(Pclass)*as.numeric(Side)),2)
+                   
+                   + I(as.numeric(Sex)*Parch)
+                   + I(as.numeric(Sex)*Fare)
+                   + I(as.numeric(Sex)*as.numeric(Pclass))
+                   + I(as.numeric(Sex)*Age)
+                   + I(as.numeric(Sex)*SibSp)
+                   + I(as.numeric(Sex)*as.numeric(Embarked))
+                   + I(as.numeric(Sex)*as.numeric(title))
+                   + I(as.numeric(Sex)*FamilySize)
+                   + I(as.numeric(Sex)*Farepp)
+                   + I(as.numeric(Sex)*as.numeric(Deck))
+                   + I(as.numeric(Sex)*as.numeric(Side))
+                  
+                   
+  #                  + poly(I(as.numeric(Sex)*Parch),2)
+  #                  + poly(I(as.numeric(Sex)*Fare),2)
+  #                  + poly(I(as.numeric(Sex)*as.numeric(Pclass)),2)
+  #                  + poly(I(as.numeric(Sex)*Age),2)
+  #                  + poly(I(as.numeric(Sex)*SibSp),2)
+  #                  + poly(I(as.numeric(Sex)*as.numeric(Embarked)),2)
+  #                  + poly(I(as.numeric(Sex)*as.numeric(title)),2)
+  #                  + poly(I(as.numeric(Sex)*FamilySize),2)
+  #                  + poly(I(as.numeric(Sex)*Farepp),2)
+  #                  + poly(I(as.numeric(Sex)*as.numeric(Deck)),2)
+  #                  + poly(I(as.numeric(Sex)*as.numeric(Side)),2)
+  #                  
+  #                  + poly(I(Age*as.numeric(Deck)),2)
+#                    + poly(SibSp,2)
+#                    + poly(Parch,2)
+#                    + poly(Fare,2)
+#                    + poly(Farepp,2)
+#                    + poly(FamilySize,2)
+#                    + poly(Age,3)   
+                    )
+  form.vars = get.vars(formla.init,data=raw_data)
+  old.vars  = character()
+  accuracy  = 0 
+  meansqe   = 1
+  
+  # go through each feature in the formula and test it
+  for (i in 2:length(form.vars)) {
+    new.vars = paste(old.vars,"+",form.vars[[i]])
+    formla   = formula(paste("Survived~-PassengerId",new.vars))
+    
+    boost.fit = gbm(formla, 
+                    data=raw_data[train.set,],
+                    distribution="bernoulli", 
+                    n.trees           = boost.ntrees, 
+                    interaction.depth = boost.depth,
+                    shrinkage         = boost.shrinkage)
+    
+    boost.pred = predict(boost.fit, 
+                         newdata=raw_data[test.set,],
+                         n.trees=boost.ntrees,
+                         type="response")
+    
+    matrix = table(actual=raw_data$Survived[test.set], 
+                   predicted=boost.pred >= threshold)
+    TN = matrix[1]; FP = matrix[3]
+    FN = matrix[2]; TP = matrix[4]
+    model_accuracy = (TN + TP) / (TN + FP + FN + TP)
+    
+    mse = mean((boost.pred - Y[test.set])^2)
+    
+    # if accuracy improves or (stays the same and MSE goes down), keep the feature
+    if ( (model_accuracy > accuracy) || 
+        ((model_accuracy == accuracy) && (mse < meansqe)) ) {
+    #if (model_accuracy >= accuracy) {
+    #if (model_accuracy > accuracy) {   # many fewer vars, acc not quite as good
+      old.vars = new.vars
+      accuracy = model_accuracy
+      meansqe  = mse
+      formla   = formula(paste("Survived~-PassengerId",new.vars))
+    } 
+  }
+  print(formla)
+  print(paste("the formula starts with ",length(form.vars),
+              " features and ends with ",length(get.vars(formla)),
+              sep=""))
+}
+```
+
+Train on the train.set, predict the test.set
+-----------  
+```{r training}
+
+boost.fit = gbm(formla, 
+                data=raw_data[train.set,],
+                distribution="bernoulli", 
+                n.trees           = boost.ntrees, 
+                interaction.depth = boost.depth,
+                shrinkage         = boost.shrinkage)
+  
+boost.pred = predict(boost.fit, 
+                     newdata=raw_data[test.set,],
+                     n.trees=boost.ntrees,
+                     type="response")
+```
+
+Show the variable importance
+-----------    
+```{r bestcomplot}
+summary(boost.fit)
+```   
+
+
+Calculate Statictics
+-----------  
+```{r stats}
+
+matrix = table(actual=raw_data$Survived[test.set], predicted=boost.pred >= threshold)
+  
+  TN = matrix[1]; FP = matrix[3]
+  FN = matrix[2]; TP = matrix[4]
+  
+  model_accuracy = (TN + TP) / (TN + FP + FN + TP)
+  
+  R              = TP / (FN + TP)
+  P              = TP / (TP + FP)
+  Fvalue         = 2 * ( (P * R) / (P + R) )
+  
+  mse = mean((boost.pred - Y[test.set])^2)
+
+  MCC = ( TP*TN - FN*FP  ) / sqrt( (TN+FN)*(TN+FP)*(TP+FN)*(TP+FP) )
+
+  ROCRpred = prediction(boost.pred, raw_data$Survived[test.set])
+  ROCRperf = performance(ROCRpred, "tpr", "fpr")
+  AUC = performance(ROCRpred,"auc")@y.values[[1]]
+
+  comparison = data.frame(boost=c(round(model_accuracy,digits=4),
+                                round(mse,digits=4),
+                                round(Fvalue,digits=4),
+                                round(AUC,digits=4),
+                                round(MCC,digits=4)))
+  rownames(comparison) = c("model_accuracy","MSE","Fvalue","AUC","MCC")
+print(comparison)
+print(matrix)
+plot_thresholds(boost.pred,threshold)
+```  
+
+## Calculate seemingly-optimal threshold   
+```{r calcthresh}
+max.acc     = 0
+thresh.df   = data.frame(zero=0)
+for (thresh in seq(from = 0.4,
+                   to   = 0.6,
+                   by  =  0.0001)) {
+  
+  matx = table(actual    = raw_data$Survived[test.set], 
+               predicted = boost.pred >= thresh)
+  
+  TN = matx[1]; FP = matx[3]
+  FN = matx[2]; TP = matx[4]
+  
+  mod.acc = (TN + TP) / (TN + FP + FN + TP)
+  if (mod.acc > max.acc) {
+    max.acc     = mod.acc
+  }
+  thresh.df[[toString(thresh)]] <- mod.acc
+}
+best.thresh.range = range(which(thresh.df[1,]==max.acc))
+best.thresh1 = as.numeric(names(thresh.df[best.thresh.range[1]]))
+best.thresh2 = as.numeric(names(thresh.df[best.thresh.range[2]]))
+best.thresh  = (best.thresh1+best.thresh2)/2
+print(paste("Center-of-the-range threshold =",
+            "[",best.thresh1,best.thresh,best.thresh2,"]"))
+```
+
+# Learning Curves
+
+### For High Bias:  
+you're not adequately fitting the data you've been given
+
+* more data won't help much
+* more features may help
+* polynomial or interaction features may help
+* reduce regularization
+* consider a different algorithm (a linear model will never fit cubic data)
+* manually look at the errors you're making to discover patterns for which you can add features or which may guide your choice of a new model    
+
+### For High Variance:  
+your model doesn't work for new data; probably overfitting
+
+* more data will help if the lines are converging
+* fewer features will reduce model complexity and make it generalize better
+* less-complex features may do the same
+* as will increased regularization
+* consider a different algorithm (a degree-6 model will overfit degree-2 data)
+* manually look at the errors you're making to discover patterns 
+```{r learningcurves}
+train.errors = numeric(0)
+test.errors  = numeric(0)
+train.set.sizes = c(seq(50,length(train.set),25),length(train.set))
+for (train.set.size in train.set.sizes) {
+  
+  # create a training sample of increasing size
+  train.set.LC = train.set[1:train.set.size]      # pick the first n
+#   train.set.LC = sample(train.set, 
+#                         size=train.set.size,
+#                         replace=FALSE)            # shuffle and get n
+#   train.set.LC = sample(train.set, 
+#                         size=train.set.size,
+#                         replace=TRUE)             # bootstrap for n
+  
+  # fit the model, use CV to pick the best number of pcomps
+  boost.fit.LC = gbm(formla, 
+                     data=raw_data[train.set.LC,],
+                     distribution="bernoulli", 
+                     n.trees           = boost.ntrees, 
+                     interaction.depth = boost.depth,
+                     shrinkage         = boost.shrinkage)
+  
+  # predict the train/test-set responses
+  boost.pred.train.LC = predict(boost.fit.LC,                    ###
+                                newdata=raw_data[train.set.LC,], ###
+                                n.trees=boost.ntrees,
+                                type="response")
+  
+  boost.pred.test.LC = predict(boost.fit.LC,                     ###
+                               newdata=raw_data[test.set,],
+                               n.trees=boost.ntrees,
+                               type="response")
+  
+  # find the MSE for train/test-set predictions
+  mse.train.LC = mean((boost.pred.train.LC - raw_data[train.set.LC,]$Survived)^2)
+  mse.test.LC  = mean((boost.pred.test.LC  - raw_data[test.set,]$Survived)^2)
+  
+  # save the values for the last step
+  train.errors = c(train.errors, mse.train.LC)
+  test.errors  = c(test.errors,  mse.test.LC)
+}
+# plot the result
+plot_learning_curves(train.set.sizes, train.errors, test.errors, optimal=0.11)
+```
+   
+False Positives  
+---------------   
+- predicted = 1   
+- actual    = 0   
+
+
+```{r FP}
+pred.vectors = data.frame(predicted = as.numeric(boost.pred>=threshold), 
+                          actual    = raw_data$Survived[test.set])
+
+false.positives = pred.vectors$predicted==1 & pred.vectors$actual==0
+print(matrix)
+print(sum(false.positives))
+print(raw_data[test.set,][false.positives,])
+
+```   
+
+False Negatives  
+---------------   
+- predicted = 0   
+- actual    = 1   
+  
+```{r FN}
+
+
+false.negatives = pred.vectors$predicted==0 & pred.vectors$actual==1
+print(matrix)
+print(sum(false.negatives))
+print(raw_data[test.set,][false.negatives,])
+
+```   
+
+***
+
+# Submit to Kaggle
+
+## Get the test dataset
+```{r getxtest}
+if (submit_to_kaggle) {
+  output.test = clean_the_dataset(read.csv("test.csv",
+                                      strip.white=TRUE,
+                                      stringsAsFactors=FALSE),
+                                dummy.vars=dummyvars)
+  Xtest = output.test$Xtest
+}
+```   
+
+## Fit the model on the FULL TRAINING DATASET   
+```{r fitthefulltrainingset}
+if (submit_to_kaggle) {
+  
+  rm(boost.fit)
+
+  boost.fit = gbm(formla, 
+                  data=raw_data,                 #############
+                  distribution="bernoulli", 
+                  n.trees           = boost.ntrees, 
+                  interaction.depth = boost.depth,
+                  shrinkage         = boost.shrinkage)
+  }
+```
+
+## Predict on Xtest      
+```{r predictxtest}
+if (submit_to_kaggle) {
+  
+  rm(boost.pred)
+  
+  boost.pred = predict(boost.fit, 
+                       newdata=Xtest,         #############
+                       n.trees=boost.ntrees,
+                       type="response")
+  }
+```   
+
+## Submit the file     
+```{r submitthefile}
+if (submit_to_kaggle) {
+  
+  submission.df = data.frame(PassengerId=Xtest$PassengerId,
+                             Survived=as.numeric(boost.pred >= threshold))
+  #                                   --------------------------------
+  
+  print(submission.df[1:10,])
+
+  write.csv(submission.df, file=file_name, row.names=FALSE)
+  print(paste(file_name,"created"))
+  }
+```
